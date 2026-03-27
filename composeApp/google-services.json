@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "703704765556",
+    "project_id": "nestup-66c3e",
+    "storage_bucket": "nestup-66c3e.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:703704765556:android:b0a2b4a5b2fa979a20ad21",
+        "android_client_info": {
+          "package_name": "com.example.nestup"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAWViZiE2QFnj-H71nGyG7iShsP9ONNt2U"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}
