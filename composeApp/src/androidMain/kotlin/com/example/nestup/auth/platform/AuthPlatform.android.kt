@@ -2,6 +2,9 @@ package com.example.nestup.auth.platform
 
 import android.content.Context
 import android.content.ContextWrapper
+import android.net.ConnectivityManager
+import android.net.NetworkCapabilities
+import android.util.Log
 import androidx.activity.ComponentActivity
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
@@ -26,6 +29,9 @@ import com.google.firebase.auth.PhoneAuthOptions
 import com.google.firebase.auth.PhoneAuthProvider
 import com.google.firebase.firestore.DocumentSnapshot
 import com.google.firebase.firestore.FirebaseFirestore
+import com.google.firebase.firestore.FirebaseFirestoreException
+import com.google.firebase.firestore.SetOptions
+import com.google.firebase.storage.StorageException
 import com.google.firebase.storage.FirebaseStorage
 import kotlinx.coroutines.tasks.await
 import kotlinx.coroutines.suspendCancellableCoroutine
@@ -35,6 +41,7 @@ import kotlin.coroutines.resumeWithException
 
 private const val USERS_COLLECTION = "users"
 private const val PROFILE_IMAGES_FOLDER = "profilePictures"
+private const val AUTH_TAG = "NestUpAuth"
 
 @Composable
 actual fun rememberAuthRepository(): AuthRepository {
@@ -144,6 +151,7 @@ private class AndroidFirebaseAuthRepository(
         lastRequestedPhoneNumber = phoneNumber
         instantCredential = null
         verificationId = null
+        Log.d(AUTH_TAG, "Requesting OTP verification")
 
         suspendCancellableCoroutine { continuation ->
             var resumed = false
@@ -156,11 +164,13 @@ private class AndroidFirebaseAuthRepository(
 
             val callbacks = object : PhoneAuthProvider.OnVerificationStateChangedCallbacks() {
                 override fun onVerificationCompleted(credential: PhoneAuthCredential) {
+                    Log.d(AUTH_TAG, "Phone verification completed instantly")
                     instantCredential = credential
                     resumeOnce { continuation.resume(Unit) }
                 }
 
                 override fun onVerificationFailed(exception: FirebaseException) {
+                    Log.e(AUTH_TAG, "Phone verification request failed", exception)
                     resumeOnce { continuation.resumeWithException(exception) }
                 }
 
@@ -168,6 +178,7 @@ private class AndroidFirebaseAuthRepository(
                     verificationIdValue: String,
                     token: PhoneAuthProvider.ForceResendingToken,
                 ) {
+                    Log.d(AUTH_TAG, "OTP code sent successfully")
                     verificationId = verificationIdValue
                     resumeOnce { continuation.resume(Unit) }
                 }
@@ -201,6 +212,7 @@ private class AndroidFirebaseAuthRepository(
             ?: throw IllegalStateException("Unable to verify this phone number right now.")
         val phoneNumber = firebaseUser.phoneNumber ?: lastRequestedPhoneNumber
             ?: throw IllegalStateException("Phone number information is missing.")
+        Log.d(AUTH_TAG, "OTP verified, loading Firestore profile")
 
         instantCredential = null
         verificationId = null
@@ -216,12 +228,21 @@ private class AndroidFirebaseAuthRepository(
             ?: throw IllegalStateException("Please verify your mobile number again.")
         val phoneNumber = currentUser.phoneNumber ?: lastRequestedPhoneNumber
             ?: throw IllegalStateException("Phone number information is missing.")
+        ensureFirestoreIsReachable("saving registration")
+        Log.d(AUTH_TAG, "Creating profile for user ${currentUser.uid}")
 
-        val profilePhotoUrl = uploadProfilePhoto(
+        val userDocumentReference = firestore.collection(USERS_COLLECTION)
+            .document(currentUser.uid)
+        val existingSnapshot = userDocumentReference
+            .get()
+            .await()
+
+        val profilePhotoUrl = uploadProfilePhotoOrNull(
             userId = currentUser.uid,
             imageBytes = details.profilePhotoBytes,
         )
-        val createdAt = System.currentTimeMillis()
+        val now = System.currentTimeMillis()
+        val createdAt = existingSnapshot.getLong("createdAtEpochMillis") ?: now
         val userDocument = mapOf(
             "userId" to currentUser.uid,
             "phoneNumber" to phoneNumber,
@@ -231,23 +252,23 @@ private class AndroidFirebaseAuthRepository(
             "city" to details.city.name,
             "profilePhotoUrl" to profilePhotoUrl,
             "createdAtEpochMillis" to createdAt,
+            "updatedAtEpochMillis" to now,
+            "isProfileComplete" to true,
         )
 
-        firestore.collection(USERS_COLLECTION)
-            .document(currentUser.uid)
-            .set(userDocument)
+        userDocumentReference
+            .set(userDocument, SetOptions.merge())
             .await()
 
-        UserProfile(
-            id = currentUser.uid,
-            phoneNumber = phoneNumber,
-            name = details.name,
-            role = details.role,
-            gender = details.gender,
-            city = details.city,
-            profilePhotoUrl = profilePhotoUrl,
-            createdAtEpochMillis = createdAt,
-        )
+        when (val session = resolveSessionState(currentUser.uid, phoneNumber)) {
+            is AuthSessionState.Authenticated -> session.profile
+            is AuthSessionState.NeedsRegistration -> {
+                throw IllegalStateException("Profile data was saved but could not be loaded.")
+            }
+            AuthSessionState.SignedOut -> {
+                throw IllegalStateException("Profile was saved, but the user session was lost.")
+            }
+        }
     }
 
     override suspend fun signOut() = runFirebaseOperation {
@@ -261,6 +282,7 @@ private class AndroidFirebaseAuthRepository(
         userId: String,
         phoneNumber: String,
     ): AuthSessionState {
+        ensureFirestoreIsReachable("loading profile")
         val snapshot = firestore.collection(USERS_COLLECTION)
             .document(userId)
             .get()
@@ -277,17 +299,40 @@ private class AndroidFirebaseAuthRepository(
         }
     }
 
-    private suspend fun uploadProfilePhoto(
+    private suspend fun ensureFirestoreIsReachable(operation: String) {
+        if (!activity.isNetworkAvailable()) {
+            throw IllegalStateException(
+                "No internet connection on this phone. Connect the device and try again.",
+            )
+        }
+
+        runCatching { firestore.enableNetwork().await() }
+            .onFailure { throwable ->
+                Log.w(AUTH_TAG, "Firestore network could not be re-enabled before $operation", throwable)
+            }
+    }
+
+    private suspend fun uploadProfilePhotoOrNull(
         userId: String,
         imageBytes: ByteArray,
-    ): String {
+    ): String? {
         val reference = storage.reference
             .child(PROFILE_IMAGES_FOLDER)
             .child(userId)
             .child("${System.currentTimeMillis()}.jpg")
 
-        reference.putBytes(imageBytes).await()
-        return reference.downloadUrl.await().toString()
+        return try {
+            reference.putBytes(imageBytes).await()
+            reference.downloadUrl.await().toString()
+        } catch (exception: StorageException) {
+            Log.e(AUTH_TAG, "Profile image upload failed", exception)
+            when (exception.errorCode) {
+                StorageException.ERROR_OBJECT_NOT_FOUND,
+                StorageException.ERROR_BUCKET_NOT_FOUND,
+                StorageException.ERROR_PROJECT_NOT_FOUND -> null
+                else -> throw exception
+            }
+        }
     }
 
     private fun DocumentSnapshot.toUserProfile(): UserProfile? {
@@ -319,6 +364,7 @@ private class AndroidFirebaseAuthRepository(
         return try {
             block()
         } catch (throwable: Throwable) {
+            Log.e(AUTH_TAG, "Firebase auth flow failed", throwable)
             throw IllegalStateException(throwable.toReadableMessage(), throwable)
         }
     }
@@ -329,9 +375,39 @@ private fun Throwable.toReadableMessage(): String {
         is FirebaseAuthInvalidCredentialsException -> "The OTP is invalid or has expired."
         is FirebaseTooManyRequestsException -> "Too many attempts. Please wait and try again."
         is FirebaseNetworkException -> "Network error. Check your internet connection and try again."
+        is StorageException -> when (errorCode) {
+            StorageException.ERROR_BUCKET_NOT_FOUND,
+            StorageException.ERROR_PROJECT_NOT_FOUND -> {
+                "Firebase Storage is not configured for this project. Open Firebase Console > Storage and complete setup."
+            }
+            StorageException.ERROR_OBJECT_NOT_FOUND -> {
+                "Profile photo upload failed because Firebase Storage is not ready for this bucket."
+            }
+            else -> localizedMessage ?: "Unable to upload the profile photo right now."
+        }
+        is FirebaseFirestoreException -> when (code) {
+            FirebaseFirestoreException.Code.UNAVAILABLE -> {
+                "OTP verification finished, but Firestore is offline. Check device internet and confirm Firestore is reachable."
+            }
+            FirebaseFirestoreException.Code.PERMISSION_DENIED -> {
+                "Firestore denied access. Check your Firestore security rules."
+            }
+            FirebaseFirestoreException.Code.FAILED_PRECONDITION -> {
+                "Firestore is not ready for this project. Create the Firestore Database in Firebase console and try again."
+            }
+            else -> localizedMessage ?: "Unable to reach Firestore right now."
+        }
         is FirebaseException -> localizedMessage ?: "Firebase rejected the request."
         else -> message ?: "Something went wrong."
     }
+}
+
+private fun Context.isNetworkAvailable(): Boolean {
+    val connectivityManager = getSystemService(ConnectivityManager::class.java) ?: return false
+    val activeNetwork = connectivityManager.activeNetwork ?: return false
+    val capabilities = connectivityManager.getNetworkCapabilities(activeNetwork) ?: return false
+    return capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET) &&
+        capabilities.hasCapability(NetworkCapabilities.NET_CAPABILITY_VALIDATED)
 }
 
 private fun Context.findActivity(): ComponentActivity? {
