@@ -49,9 +49,18 @@ import com.example.nestup.auth.domain.IndianCity
 import com.example.nestup.auth.domain.UserProfile
 import com.example.nestup.auth.domain.UserRole
 
+import com.example.nestup.discovery.presentation.DiscoveryScreen
+import com.example.nestup.discovery.presentation.DiscoveryViewModel
+
+import androidx.compose.foundation.layout.WindowInsets
+import androidx.compose.foundation.layout.asPaddingValues
+import androidx.compose.foundation.layout.safeDrawing
+import androidx.compose.foundation.layout.statusBarsPadding
+
 @Composable
 fun AuthScreen(
     viewModel: AuthViewModel,
+    discoveryViewModel: DiscoveryViewModel,
     onPickProfileImage: () -> Unit,
 ) {
     val uiState by viewModel.uiState.collectAsState()
@@ -63,64 +72,75 @@ fun AuthScreen(
         viewModel.clearSnackbar()
     }
 
-    Scaffold(
-        containerColor = Color.Transparent,
-        snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
-    ) { paddingValues ->
-        Box(
-            modifier = Modifier
-                .fillMaxSize()
-                .background(
-                    Brush.verticalGradient(
-                        colors = listOf(
-                            Color(0xFF153522),
-                            MaterialTheme.colorScheme.background,
-                            Color(0xFF040404),
-                        ),
+    Box(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(
+                Brush.verticalGradient(
+                    colors = listOf(
+                        Color(0xFF153522),
+                        MaterialTheme.colorScheme.background,
+                        Color(0xFF040404),
                     ),
-                )
-                .padding(paddingValues),
-        ) {
-            when (uiState.destination) {
-                AuthDestination.Splash -> LoadingContent()
-                AuthDestination.PhoneEntry -> PhoneEntryContent(
-                    state = uiState,
-                    onPhoneNumberChanged = viewModel::onPhoneNumberChanged,
-                    onContinue = viewModel::sendOtp,
-                )
+                ),
+            )
+    ) {
+        when (uiState.destination) {
+            AuthDestination.Home -> DiscoveryScreen(
+                viewModel = discoveryViewModel,
+                onSignOut = viewModel::signOut,
+            )
 
-                AuthDestination.OtpEntry -> OtpEntryContent(
-                    state = uiState,
-                    onOtpChanged = viewModel::onOtpChanged,
-                    onVerify = viewModel::verifyOtp,
-                    onEditPhone = viewModel::editPhoneNumber,
-                )
+            else -> {
+                Scaffold(
+                    containerColor = Color.Transparent,
+                    snackbarHost = { SnackbarHost(hostState = snackbarHostState) },
+                    modifier = Modifier.fillMaxSize()
+                ) { paddingValues ->
+                    Box(
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(paddingValues)
+                    ) {
+                        when (uiState.destination) {
+                            AuthDestination.Splash -> LoadingContent()
+                            AuthDestination.PhoneEntry -> PhoneEntryContent(
+                                state = uiState,
+                                onPhoneNumberChanged = viewModel::onPhoneNumberChanged,
+                                onContinue = viewModel::sendOtp,
+                            )
 
-                AuthDestination.Registration -> RegistrationContent(
-                    state = uiState,
-                    onNameChanged = viewModel::onNameChanged,
-                    onRoleSelected = viewModel::onRoleSelected,
-                    onGenderSelected = viewModel::onGenderSelected,
-                    onCitySelected = viewModel::onCitySelected,
-                    onPickProfileImage = onPickProfileImage,
-                    onSubmit = viewModel::submitRegistration,
-                )
+                            AuthDestination.OtpEntry -> OtpEntryContent(
+                                state = uiState,
+                                onOtpChanged = viewModel::onOtpChanged,
+                                onVerify = viewModel::verifyOtp,
+                                onEditPhone = viewModel::editPhoneNumber,
+                            )
 
-                AuthDestination.Home -> HomeContent(
-                    profile = uiState.signedInProfile,
-                    onSignOut = viewModel::signOut,
-                )
-            }
-
-            if (uiState.isLoading) {
-                Box(
-                    modifier = Modifier
-                        .fillMaxSize()
-                        .background(Color.Black.copy(alpha = 0.42f)),
-                    contentAlignment = Alignment.Center,
-                ) {
-                    CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
+                            AuthDestination.Registration -> RegistrationContent(
+                                state = uiState,
+                                onNameChanged = viewModel::onNameChanged,
+                                onRoleSelected = viewModel::onRoleSelected,
+                                onGenderSelected = viewModel::onGenderSelected,
+                                onCitySelected = viewModel::onCitySelected,
+                                onPickProfileImage = onPickProfileImage,
+                                onSubmit = viewModel::submitRegistration,
+                            )
+                            else -> Unit
+                        }
+                    }
                 }
+            }
+        }
+
+        if (uiState.isLoading) {
+            Box(
+                modifier = Modifier
+                    .fillMaxSize()
+                    .background(Color.Black.copy(alpha = 0.42f)),
+                contentAlignment = Alignment.Center,
+            ) {
+                CircularProgressIndicator(color = MaterialTheme.colorScheme.primary)
             }
         }
     }
@@ -391,38 +411,6 @@ private fun RegistrationContent(
 }
 
 @Composable
-private fun HomeContent(
-    profile: UserProfile?,
-    onSignOut: () -> Unit,
-) {
-    AuthCardScaffold(
-        eyebrow = "Logged In",
-        title = "Welcome to NestUp",
-        subtitle = "Your auth flow is connected. Next you can build listings, roommate discovery, and chat on top of this signed-in state.",
-    ) {
-        val currentProfile = profile
-        if (currentProfile != null) {
-            DetailRow("Name", currentProfile.name)
-            DetailRow("Phone", currentProfile.phoneNumber)
-            DetailRow("Role", currentProfile.role.title)
-            DetailRow("Gender", currentProfile.gender.label)
-            DetailRow("City", currentProfile.city.displayName)
-        }
-
-        Spacer(modifier = Modifier.height(24.dp))
-
-        Button(
-            onClick = onSignOut,
-            modifier = Modifier.fillMaxWidth(),
-            contentPadding = PaddingValues(vertical = 16.dp),
-            shape = RoundedCornerShape(18.dp),
-        ) {
-            Text("Sign out")
-        }
-    }
-}
-
-@Composable
 private fun AuthCardScaffold(
     eyebrow: String,
     title: String,
@@ -515,23 +503,3 @@ private fun SelectionChip(
     }
 }
 
-@Composable
-private fun DetailRow(label: String, value: String) {
-    Column(
-        modifier = Modifier.fillMaxWidth(),
-    ) {
-        Text(
-            text = label,
-            style = MaterialTheme.typography.labelMedium,
-            color = MaterialTheme.colorScheme.onSurfaceVariant,
-        )
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = value,
-            style = MaterialTheme.typography.bodyLarge,
-            color = MaterialTheme.colorScheme.onSurface,
-            fontWeight = FontWeight.Medium,
-        )
-        Spacer(modifier = Modifier.height(16.dp))
-    }
-}
